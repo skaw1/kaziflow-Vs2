@@ -12,6 +12,7 @@
 
 
 
+
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { MoodboardItem, Project, UserCategory } from '../types';
 import { ArrowDownIcon, PlusCircleIcon, TrashIcon, ResetIcon, CloseIcon } from '../constants';
@@ -244,6 +245,21 @@ const TrashModal: React.FC<{
     );
 };
 
+const getEventCoords = (e: MouseEvent | TouchEvent | React.MouseEvent | React.TouchEvent) => {
+    const event = 'nativeEvent' in e ? e.nativeEvent : e;
+    if (event instanceof MouseEvent) {
+        return { clientX: event.clientX, clientY: event.clientY };
+    }
+    if (event instanceof TouchEvent) {
+        const touch = event.touches[0] || event.changedTouches[0];
+        if (touch) {
+            return { clientX: touch.clientX, clientY: touch.clientY };
+        }
+    }
+    return { clientX: 0, clientY: 0 };
+};
+
+
 const MoodboardItemComponent: React.FC<{
     item: MoodboardItem;
     onUpdate: (item: MoodboardItem) => void;
@@ -258,35 +274,6 @@ const MoodboardItemComponent: React.FC<{
     const itemRef = useRef<HTMLDivElement>(null);
     const dragInfo = useRef({ isDragging: false, isResizing: false, startX: 0, startY: 0, startWidth: 0, startHeight: 0, offsetX: 0, offsetY: 0 });
 
-    const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        if (!isEditable || !itemRef.current) return;
-        onBringToFront(item);
-
-        dragInfo.current.isDragging = true;
-        dragInfo.current.offsetX = e.clientX - itemRef.current.offsetLeft;
-        dragInfo.current.offsetY = e.clientY - itemRef.current.offsetTop;
-        onDragStateChange(true, false);
-
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('mouseup', handleMouseUp);
-    }, [isEditable, item, onBringToFront, onDragStateChange]);
-
-    const handleResizeMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        e.stopPropagation();
-        if (!isEditable) return;
-        onBringToFront(item);
-
-        dragInfo.current.isResizing = true;
-        dragInfo.current.startX = e.clientX;
-        dragInfo.current.startY = e.clientY;
-        dragInfo.current.startWidth = item.width;
-        dragInfo.current.startHeight = item.height;
-        onDragStateChange(true, false);
-        
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('mouseup', handleMouseUp);
-    }, [isEditable, item, onBringToFront, onDragStateChange]);
-    
     const checkTrashOverlap = useCallback(() => {
         if (!itemRef.current || !trashCanRef.current) return false;
         const itemRect = itemRef.current.getBoundingClientRect();
@@ -297,27 +284,37 @@ const MoodboardItemComponent: React.FC<{
                  itemRect.top > trashRect.bottom);
     }, [trashCanRef]);
 
-    const handleMouseMove = useCallback((e: MouseEvent) => {
+    const handleMove = useCallback((e: MouseEvent | TouchEvent) => {
+        if (e instanceof TouchEvent && (dragInfo.current.isDragging || dragInfo.current.isResizing)) {
+            e.preventDefault();
+        }
+
         const bounds = boundsRef.current?.getBoundingClientRect();
         if (!bounds) return;
+
+        const { clientX, clientY } = getEventCoords(e);
 
         const isOverTrash = checkTrashOverlap();
         onDragStateChange(true, isOverTrash);
 
         if (dragInfo.current.isDragging) {
-            let newX = e.clientX - dragInfo.current.offsetX;
-            let newY = e.clientY - dragInfo.current.offsetY;
+            let newX = clientX - dragInfo.current.offsetX;
+            let newY = clientY - dragInfo.current.offsetY;
             newX = Math.max(0, Math.min(newX, bounds.width - item.width));
             newY = Math.max(0, Math.min(newY, bounds.height - item.height));
             onUpdate({ ...item, x: newX, y: newY });
         } else if (dragInfo.current.isResizing) {
-            const newWidth = Math.max(100, dragInfo.current.startWidth + (e.clientX - dragInfo.current.startX));
-            const newHeight = Math.max(100, dragInfo.current.startHeight + (e.clientY - dragInfo.current.startY));
-            onUpdate({ ...item, width: newWidth, height: newHeight });
+            const newWidth = Math.max(100, dragInfo.current.startWidth + (clientX - dragInfo.current.startX));
+            const newHeight = Math.max(100, dragInfo.current.startHeight + (clientY - dragInfo.current.startY));
+            
+            const finalWidth = Math.min(newWidth, bounds.width - item.x);
+            const finalHeight = Math.min(newHeight, bounds.height - item.y);
+            
+            onUpdate({ ...item, width: finalWidth, height: finalHeight });
         }
     }, [item, onUpdate, boundsRef, checkTrashOverlap, onDragStateChange]);
 
-    const handleMouseUp = useCallback(() => {
+    const handleUp = useCallback(() => {
         if (dragInfo.current.isDragging && checkTrashOverlap()) {
             onTrash(item.id);
         }
@@ -325,9 +322,51 @@ const MoodboardItemComponent: React.FC<{
         dragInfo.current.isDragging = false;
         dragInfo.current.isResizing = false;
         onDragStateChange(false, false);
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
-    }, [handleMouseMove, onDragStateChange, checkTrashOverlap, onTrash, item.id]);
+        
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleUp);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleUp);
+    }, [handleMove, onDragStateChange, checkTrashOverlap, onTrash, item.id]);
+
+    const handleStart = useCallback((e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+        if (!isEditable || !itemRef.current) return;
+        onBringToFront(item);
+
+        const { clientX, clientY } = getEventCoords(e);
+
+        dragInfo.current.isDragging = true;
+        dragInfo.current.isResizing = false;
+        dragInfo.current.offsetX = clientX - itemRef.current.offsetLeft;
+        dragInfo.current.offsetY = clientY - itemRef.current.offsetTop;
+        onDragStateChange(true, false);
+
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleUp);
+        window.addEventListener('touchmove', handleMove, { passive: false });
+        window.addEventListener('touchend', handleUp);
+    }, [isEditable, item, onBringToFront, onDragStateChange, handleMove, handleUp]);
+
+    const handleResizeStart = useCallback((e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+        e.stopPropagation();
+        if (!isEditable) return;
+        onBringToFront(item);
+
+        const { clientX, clientY } = getEventCoords(e);
+
+        dragInfo.current.isResizing = true;
+        dragInfo.current.isDragging = false;
+        dragInfo.current.startX = clientX;
+        dragInfo.current.startY = clientY;
+        dragInfo.current.startWidth = item.width;
+        dragInfo.current.startHeight = item.height;
+        onDragStateChange(true, false);
+        
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleUp);
+        window.addEventListener('touchmove', handleMove, { passive: false });
+        window.addEventListener('touchend', handleUp);
+    }, [isEditable, item, onBringToFront, onDragStateChange, handleMove, handleUp]);
 
     const itemStyle: React.CSSProperties = {
         position: 'absolute',
@@ -344,7 +383,13 @@ const MoodboardItemComponent: React.FC<{
     };
 
     return (
-        <div ref={itemRef} style={itemStyle} onMouseDown={handleMouseDown} className={`group rounded-xl shadow-lg overflow-hidden flex items-center justify-center transition-all duration-100 ease-linear ${isEditable ? 'cursor-move' : ''}`}>
+        <div 
+            ref={itemRef} 
+            style={itemStyle} 
+            onMouseDown={handleStart} 
+            onTouchStart={handleStart} 
+            className={`group rounded-xl shadow-lg overflow-hidden flex items-center justify-center transition-all duration-100 ease-linear ${isEditable ? 'cursor-move' : ''}`}
+        >
             {item.type === 'image' ? (
                 <img src={item.content} alt="Moodboard" className="w-full h-full object-cover pointer-events-none" />
             ) : (
@@ -353,16 +398,17 @@ const MoodboardItemComponent: React.FC<{
             {isEditable && (
                 <>
                     <div className="absolute top-2 right-2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        <button onMouseDown={(e) => e.stopPropagation()} onClick={() => onEdit(item)} className="p-2 bg-black/50 text-white rounded-full hover:bg-black/80">
+                        <button onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onClick={() => onEdit(item)} className="p-2 bg-black/50 text-white rounded-full hover:bg-black/80">
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L15.232 5.232z" /></svg>
                         </button>
                     </div>
-                    <div onMouseDown={handleResizeMouseDown} className="absolute bottom-0 right-0 w-4 h-4 bg-brand-teal/50 rounded-tl-lg cursor-se-resize opacity-0 group-hover:opacity-100"/>
+                    <div onMouseDown={handleResizeStart} onTouchStart={handleResizeStart} className="absolute bottom-0 right-0 w-4 h-4 bg-brand-teal/50 rounded-tl-lg cursor-se-resize opacity-0 group-hover:opacity-100"/>
                 </>
             )}
         </div>
     );
 };
+
 
 const TrashCan: React.FC<{
     isOver: boolean;
